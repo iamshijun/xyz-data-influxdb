@@ -8,6 +8,7 @@ import org.influxdb.dto.QueryResult;
 import org.influxdb.impl.InfluxDBResultMapper;
 import xyz.asitanokibou.data.influxdb.ex.InfluxDBXConnectionException;
 import xyz.asitanokibou.data.influxdb.ex.InfluxDBXException;
+import xyz.asitanokibou.data.influxdb.pojo.GroupByResult;
 import xyz.asitanokibou.data.influxdb.pojo.TimedResult;
 
 import javax.annotation.Nonnull;
@@ -134,9 +135,11 @@ public class InfluxDBTemplate {
 
             InfluxDBUtil.queryResultSeriesCallback(queryResult, series -> {
 
-                //String name = series.getName();
-                List<String> columns = series.getColumns();
-                String columnName = columns.get(0);
+                String seriesName = series.getName();
+                Map<String, String> tags = series.getTags();
+
+                String columnName = series.getColumns().stream()
+                        .filter(name -> !name.equals("time")).findFirst().orElse(null);
 
                 List<List<Object>> values = series.getValues();
                 values.forEach(valuePairs -> {
@@ -144,17 +147,57 @@ public class InfluxDBTemplate {
 
                     Object rawValue = valuePairs.get(1);
 
-                    T value;
-                    if (clazz == String.class) {
-                        value = rawValue == null ? null : (T) String.valueOf(rawValue);
-                    } else if (Number.class.isAssignableFrom(clazz) && rawValue instanceof Number) {
-                        value = (T) Utils.convertNumberToTargetClass((Number) rawValue, (Class) clazz);
-                    } else {
-                        //暂时不进行类型判断 直接转换
-                        value = (T) rawValue;
+                    T value = convertTo(clazz, rawValue);
+
+                    results.add(new TimedResult<>(seriesName, columnName, tags,time, value));
+                });
+            });
+            return results;
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T convertTo(Class<T> clazz, Object rawValue) {
+        T value;
+        if (clazz == String.class) {
+            value = rawValue == null ? null : (T) String.valueOf(rawValue);
+        } else if (Number.class.isAssignableFrom(clazz) && rawValue instanceof Number) {
+            value = (T) Utils.convertNumberToTargetClass((Number) rawValue, (Class) clazz);
+        } else {
+            //暂时不进行类型判断 直接转换
+            value = (T) rawValue;
+        }
+        return value;
+    }
+
+    public <T> List<GroupByResult> queryForGroupByList(@Nullable String database, @Nullable String measurement,
+                                                       @Nonnull String queryString, @Nullable Map<String, Object> argsMap) {
+        return queryForListByQuery(database, measurement, queryString, argsMap, queryResult -> {
+
+            List<GroupByResult> results = new ArrayList<>();
+
+            InfluxDBUtil.queryResultSeriesCallback(queryResult, series -> {
+
+                String theMesurement = series.getName();
+                Map<String, String> tags = series.getTags();
+
+                List<String> columnNames = series.getColumns();
+
+                List<List<Object>> values = series.getValues();
+
+                values.forEach(valuePairs -> {
+                    Instant time = convertTimeValue(valuePairs.get(0), TimeUnit.MILLISECONDS);
+
+                    Map<String, Object> groupFieldData = new HashMap<>();
+                    for (int i = 1; i < valuePairs.size(); i++) {
+
+                        Object rawValue = valuePairs.get(i);
+                        String columnName = columnNames.get(i);
+
+                        groupFieldData.put(columnName, rawValue);
                     }
 
-                    results.add(new TimedResult<>(columnName,time, value));
+                    results.add(new GroupByResult(theMesurement,tags,time, groupFieldData));
                 });
             });
             return results;

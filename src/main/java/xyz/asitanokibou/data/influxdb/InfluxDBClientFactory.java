@@ -39,7 +39,6 @@ public class InfluxDBClientFactory implements PooledObjectFactory<InfluxDB> {
     private String defaultDatabase;
 
     private boolean logHttp;
-    private boolean logQueryCommand;
     private boolean logQueryResult;
     // private String clientName;
     private InfluxDBClientPool innerPool;
@@ -92,7 +91,7 @@ public class InfluxDBClientFactory implements PooledObjectFactory<InfluxDB> {
 //        client.disableBatch();
 //        client.disableGzip();
 
-        return new DefaultPooledObject<>(InfluxDBProxy.newProxy(client, innerPool, logQueryCommand, logQueryResult));
+        return new DefaultPooledObject<>(InfluxDBProxy.newProxy(client, innerPool, logQueryResult));
     }
 
     @Override
@@ -154,30 +153,28 @@ public class InfluxDBClientFactory implements PooledObjectFactory<InfluxDB> {
         private final InfluxDBClientPool datasource;
 
         private boolean isBroken;
-        @Setter
-        private boolean logQueryCommand;
+
         @Setter
         private boolean logQueryResult;
 
-        private InfluxDBProxy(InfluxDB target, InfluxDBClientPool datasource, boolean logQueryCommand, boolean logQueryResult) {
+        private InfluxDBProxy(InfluxDB target, InfluxDBClientPool datasource, boolean logQueryResult) {
             this.target = target;
             this.datasource = datasource;
-            this.logQueryCommand = logQueryCommand;
             this.logQueryResult = logQueryResult;
         }
 
         static InfluxDB newProxy(InfluxDB client, InfluxDBClientPool datasource) {
-            return newProxy(client, datasource, false, false);
+            return newProxy(client, datasource, false);
         }
 
-        static InfluxDB newProxy(InfluxDB client, InfluxDBClientPool datasource, boolean logQueryCommand, boolean logQueryResult) {
+        static InfluxDB newProxy(InfluxDB client, InfluxDBClientPool datasource, boolean logQueryResult) {
             if (datasource == null) {//如果没有datasource就暂时不代理 - 代理只处理close的时候将target放回到对象池中
                 return client;
             }
             Objects.requireNonNull(client);
             return (InfluxDB) Proxy.newProxyInstance(Utils.getClassLoader(),
                     new Class[]{InfluxDB.class, InfluxDBproxyHelper.class},
-                    new InfluxDBProxy(client, datasource, logQueryCommand, logQueryResult));
+                    new InfluxDBProxy(client, datasource, logQueryResult));
         }
 
         @Override
@@ -228,7 +225,7 @@ public class InfluxDBClientFactory implements PooledObjectFactory<InfluxDB> {
 
         @SuppressWarnings("unchecked")
         private void logQuery(Query query) {
-            if (logQueryCommand) {
+            if (log.isDebugEnabled()) {
                 String queryString = query.getCommand();
 
                 if (query instanceof BoundParameterQuery) {
