@@ -3,6 +3,7 @@ package xyz.asitanokibou.data.influxdb;
 import lombok.extern.slf4j.Slf4j;
 import org.influxdb.InfluxDB;
 import org.influxdb.dto.BoundParameterQuery;
+import org.influxdb.dto.Point;
 import org.influxdb.dto.Query;
 import org.influxdb.dto.QueryResult;
 import org.influxdb.impl.InfluxDBResultMapper;
@@ -20,11 +21,9 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.temporal.ChronoField;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
-/**
- * @author aimysaber@gmail.com
- */
 @Slf4j
 public class InfluxDBTemplate {
 
@@ -46,7 +45,21 @@ public class InfluxDBTemplate {
     */
     private InfluxDBResultMapper resultMapper; //thread-safe
     private SchemaOperation schemaOperation;
+
+    //指定时区 如果语句中没有加tz 会默认自动加上
     private ZoneId zoneId = ZoneId.of("Asia/Shanghai");     //ZoneId.systemDefault();
+
+    public void setTimeZone(String timeZone) {
+        try {
+            zoneId = ZoneId.of(timeZone);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public ZoneId getZoneId() {
+        return zoneId;
+    }
 
     public InfluxDBTemplate(InfluxDBClientPool influxDBClientPool) {
         this.dataSource = influxDBClientPool;
@@ -73,6 +86,41 @@ public class InfluxDBTemplate {
         }
     }
 
+    public void write(String database, String retentionPolicy,Point point){
+        execute(new InfluxDBClientCallbackWithNoResult() {
+            @Override
+            public void executeWithNoResult(InfluxDB client) {
+                //client.write(point); //保存到默认的dataase上
+                //为防止写错 需要显示指定
+                client.write(database, retentionPolicy, point);
+            }
+        });
+    }
+
+    public void writeBatch(String database, String retentionPolicy, List<Point> points){
+
+        if (Utils.isEmpty(points)) {
+            return;
+        }
+
+        execute(new InfluxDBClientCallbackWithNoResult() {
+            @Override
+            public void executeWithNoResult(InfluxDB client) {
+                boolean batnchEnablePrev = client.isBatchEnabled();
+                if (!batnchEnablePrev) {
+                    client.enableBatch();
+                }
+                //TODO if points.size > 3000 or .... split it in multi batch process
+                points.forEach(point -> client.write(database,retentionPolicy,point));
+                client.flush();
+
+                if (!batnchEnablePrev) {
+                    client.disableBatch();
+                }
+            }
+        });
+    }
+
     public <T> List<T> queryForList(QueryCreator queryCreator, String measurement, Class<T> clazz) {
 
         return execute(client -> {
@@ -96,7 +144,7 @@ public class InfluxDBTemplate {
     }
 
     public <T> List<T> queryForListByQuery(String database, String measurement, String queryString, Class<T> clazz, Map<String, Object> argsMap) {
-
+        //TODO 添加类似jdbc的  BeanPropertyRowMapper 或者是 dbutil的 ...  bean mappers
         return queryForListByQuery(database, measurement, queryString, argsMap, queryResult -> {
             if (Utils.isNotEmpty(measurement)) {
                 return resultMapper.toPOJO(queryResult, clazz, measurement);
@@ -127,8 +175,12 @@ public class InfluxDBTemplate {
         return Utils.first(queryForTimedScalarList(database, measurement, queryString, clazz, argsMap));
     }
 
-    @SuppressWarnings("unchecked")
+
     public <T> List<TimedResult<T>> queryForTimedScalarList(@Nullable String database, @Nullable String measurement, @Nonnull String queryString, Class<T> clazz, @Nullable Map<String, Object> argsMap) {
+        return queryForTimedScalarList(database, measurement, queryString, clazz, argsMap, true);
+    }
+
+    public <T> List<TimedResult<T>> queryForTimedScalarList(@Nullable String database, @Nullable String measurement, @Nonnull String queryString, Class<T> clazz, @Nullable Map<String, Object> argsMap, boolean timezoneAdjust) {
         return queryForListByQuery(database, measurement, queryString, argsMap, queryResult -> {
 
             List<TimedResult<T>> results = new ArrayList<>();
@@ -153,7 +205,8 @@ public class InfluxDBTemplate {
                 });
             });
             return results;
-        });
+
+        },timezoneAdjust);
     }
 
     @SuppressWarnings("unchecked")
@@ -267,35 +320,14 @@ public class InfluxDBTemplate {
     }
 
     private <T> List<T> queryForListByQuery(String database, String measurement, String rawQuery, Map<String, Object> argsMap, InfluxDBXMapper<T> mapper) {
+        return queryForListByQuery(database,measurement,rawQuery,argsMap,mapper,true);
+    }
+
+    private <T> List<T> queryForListByQuery(String database, String measurement, String rawQuery, Map<String, Object> argsMap, InfluxDBXMapper<T> mapper,boolean timezoneAdjust) {
         return execute(client -> {
             //因为query中的measurement不能使用bind 这里先手动替换 - 暂时固定名称为 measurement
 
-            String queryString = Utils.isNotEmpty(measurement) ?
-                    rawQuery.replaceAll("#measurement#", measurement) : rawQuery;
-
-            //如果没有指定timezone的话 这里补充一个当前时区到查询中
-
-            if (!queryString.toLowerCase().contains("tz(")) {
-                String tz = " tz('" + zoneId.toString() + "') ";
-                //如果有多条语句 为各个语句都加上tz
-                if(queryString.contains(";")) {
-                    queryString = Arrays.stream(queryString.split(";"))
-                            .filter(str -> !str.trim().isEmpty())
-                            .map(str -> str + tz)
-                            .collect(Collectors.joining(";"));
-                }else {
-                    queryString = queryString + tz;
-                }
-            }
-
-            BoundParameterQuery.QueryBuilder queryBuilder =
-                    BoundParameterQuery.QueryBuilder.newQuery(queryString).forDatabase(database);
-
-            if (argsMap != null && !argsMap.isEmpty()) {
-                argsMap.forEach(queryBuilder::bind);
-            }
-
-            BoundParameterQuery boundParameterQuery = queryBuilder.create();
+            BoundParameterQuery boundParameterQuery = getBoundParameterQuery(database, measurement, rawQuery, argsMap, timezoneAdjust);
 
             QueryResult queryResult = client.query(boundParameterQuery, TimeUnit.MILLISECONDS);
 
@@ -303,6 +335,61 @@ public class InfluxDBTemplate {
         });
     }
 
+    /**
+     * 构建绑定参数的query
+     * @param database - 数据库
+     * @param measurement - 表
+     * @param rawQuery - 原始查询语句
+     * @param argsMap - 参数map
+     * @param timezoneAdjust - 是否需要调整时区;对于 schema语句的不能添加tz在语句后
+     * @return -
+     */
+    BoundParameterQuery getBoundParameterQuery(String database, String measurement, String rawQuery, Map<String, Object> argsMap,boolean timezoneAdjust) {
+
+        String queryString = Utils.isNotEmpty(measurement) ?
+                rawQuery.replaceAll("#measurement#", measurement) : rawQuery;
+
+        //如果没有指定timezone的话 这里补充一个当前时区到查询中
+
+        //!isSchemaQueryString(queryString)
+        if (timezoneAdjust && !queryString.toLowerCase().contains("tz(")) {
+            String tz = " tz('" + zoneId.toString() + "') ";
+            //如果有多条语句 为各个语句都加上tz
+            if(queryString.contains(";")) {
+                queryString = Arrays.stream(queryString.split(";"))
+                        .filter(str -> !str.trim().isEmpty())
+                        .map(str -> str + tz)
+                        .collect(Collectors.joining(";"));
+            }else {
+                queryString = queryString + tz;
+            }
+        }
+
+        BoundParameterQuery.QueryBuilder queryBuilder =
+                BoundParameterQuery.QueryBuilder.newQuery(queryString).forDatabase(database);
+
+        if (Utils.isNotEmpty(argsMap)) {
+            argsMap.forEach(queryBuilder::bind);
+        }
+
+        return queryBuilder.create();
+    }
+
+    private boolean isSchemaQueryString(String queryString) {
+        String lowerQs = queryString.toLowerCase().trim().replaceAll("\\s{2,}"," ");
+        return lowerQs.contains("show series")
+                || lowerQs.contains("show measurements")
+                || lowerQs.contains("show tag")
+                ;
+    }
+
+
+    /**
+     * influxdb返回的时间 不会帮我们转换成date,locatedate等类型,返回的类型可能为 long,double这里是 官方InfluxClient中的部分转换代码 将时间转换为Instant.转为LocalDate,LocalDateTime需由开发自己编写
+     * @param value -
+     * @param precision - 现在写死为 millseconds
+     * @return - Instant
+     */
     private Instant convertTimeValue(Object value, TimeUnit precision) {
         Instant instant;
         if (value instanceof String) {
@@ -333,7 +420,7 @@ public class InfluxDBTemplate {
         return Utils.first(mapList).orElse(Collections.emptyMap());
     }
 
-    public List<Map<String, Object>> queryForMapListByQuery(String database,String measurement, String queryString, Map<String, Object> paramMap) {
+    public @Nonnull List<Map<String, Object>> queryForMapListByQuery(String database,String measurement, String queryString, Map<String, Object> paramMap) {
 
         return queryForListByQuery(database, measurement, queryString, paramMap, queryResult -> {
 

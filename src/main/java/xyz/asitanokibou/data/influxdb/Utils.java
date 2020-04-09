@@ -9,10 +9,7 @@ import java.lang.reflect.UndeclaredThrowableException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 public final class Utils {
 
@@ -37,6 +34,16 @@ public final class Utils {
     public static boolean isNotEmpty(Collection<?> collection) {
         return !isEmpty(collection);
     }
+
+    public static boolean isEmpty(Map<?,?> map) {
+        return map == null || map.isEmpty();
+    }
+
+    public static boolean isNotEmpty(Map<?,?> map) {
+        return !isEmpty(map);
+    }
+
+
 
     public static String quote(String str) {
         return '"' + str + '"';
