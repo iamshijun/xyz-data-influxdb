@@ -121,6 +121,14 @@ public class InfluxDBTemplate {
         });
     }
 
+    /**
+     * (使用默认的数据库) 自定义查询进行 列表查询
+     * @param queryCreator 查询构造器
+     * @param measurement 表
+     * @param clazz 映射对象(含@Measurement)
+     * @param <T>
+     * @return
+     */
     public <T> List<T> queryForList(QueryCreator queryCreator, String measurement, Class<T> clazz) {
 
         return execute(client -> {
@@ -143,6 +151,16 @@ public class InfluxDBTemplate {
         return queryForListByQuery(null, measurement, queryString, clazz, argsMap);
     }
 
+    /**
+     * 根据查询语句查询结果列表 - 用clazz(为@Measurement注解)指定映射类
+     * @param database 数据库
+     * @param measurement 表
+     * @param queryString 查询语句
+     * @param clazz 含有@Measurement注解的映射类
+     * @param argsMap 参数
+     * @param <T>
+     * @return
+     */
     public <T> List<T> queryForListByQuery(String database, String measurement, String queryString, Class<T> clazz, Map<String, Object> argsMap) {
         //TODO 添加类似jdbc的  BeanPropertyRowMapper 或者是 dbutil的 ...  bean mappers
         return queryForListByQuery(database, measurement, queryString, argsMap, queryResult -> {
@@ -323,6 +341,17 @@ public class InfluxDBTemplate {
         return queryForListByQuery(database,measurement,rawQuery,argsMap,mapper,true);
     }
 
+    /**
+     * base query for List Query
+     * @param database  数据库
+     * @param measurement  表
+     * @param rawQuery  原始查询语句
+     * @param argsMap  参数map
+     * @param mapper  对象映射器
+     * @param timezoneAdjust 是否需要调整时区;对于 schema语句的不能添加tz在语句后
+     * @param <T>
+     * @return
+     */
     private <T> List<T> queryForListByQuery(String database, String measurement, String rawQuery, Map<String, Object> argsMap, InfluxDBXMapper<T> mapper,boolean timezoneAdjust) {
         return execute(client -> {
             //因为query中的measurement不能使用bind 这里先手动替换 - 暂时固定名称为 measurement
@@ -337,10 +366,10 @@ public class InfluxDBTemplate {
 
     /**
      * 构建绑定参数的query
-     * @param database - 数据库
-     * @param measurement - 表
-     * @param rawQuery - 原始查询语句
-     * @param argsMap - 参数map
+     * @param database  数据库
+     * @param measurement  表
+     * @param rawQuery  原始查询语句
+     * @param argsMap 参数map
      * @param timezoneAdjust - 是否需要调整时区;对于 schema语句的不能添加tz在语句后
      * @return -
      */
